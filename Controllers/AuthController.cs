@@ -59,8 +59,9 @@ namespace IdentityAuthSystem.Controllers
             {
                 var token = await _userManager.GenerateTwoFactorTokenAsync(user, "Email");
                 await _emailSender.SendEmailAsync(user.Email!, "Your 2FA Code", $"Your verification code is: <b>{token}</b>");
-                return Ok(new { RequirewoFactor = true, Message = "2FA token sent to email." });
 
+                
+                return Ok(new { RequiresTwoFactor = true, Message = "2FA token sent to email." });
             }
 
             if (result.IsLockedOut)
@@ -69,44 +70,65 @@ namespace IdentityAuthSystem.Controllers
             if (!result.Succeeded)
                 return Unauthorized("Invalid credentials.");
 
-            return Ok(new { Message = "Login successsful." });
+            
+            return Ok(new { Message = "Login successful." });
         }
+
 
         [HttpPost("verify-2fa")]
         public async Task<IActionResult> VerifyTwoFactor([FromBody] TwoFactorDto dto)
         {
             var user = await _userManager.FindByEmailAsync(dto.Email);
-            if (user == null) return BadRequest("Invaid request.");
+            if (user == null) return BadRequest("Invalid request.");
 
             var valid = await _userManager.VerifyTwoFactorTokenAsync(user, "Email", dto.Code);
             if (!valid) return BadRequest("Invalid 2FA code.");
 
+            // Inside your login or 2FA success flow:
+            var loginTime = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss UTC");
+            var notificationBody = $"<h3>Security Alert</h3><p>A new login to your account was detected on {loginTime}. If this wasn't you, please secure your account immediately.</p>";
+
+            await _emailSender.SendEmailAsync(user.Email!, "New Login Notification", notificationBody);
+
             return Ok(new { Message = "2FA Verification successful. Logged in." });
+
+            
         }
 
+
         [HttpPost("forgot-password")]
-        public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto dto)
+        public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto model)
         {
-            var user = await _userManager.FindByEmailAsync(dto.Email);
-            if (user == null) return Ok(new { Message = "If the email exists, a reset token has been sent." });
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null)
+            {
+                // Return success even if user doesn't exist to prevent email enumeration attacks
+                return Ok(new { message = "If your email is registered, a password reset link has been sent." });
+            }
 
+            // 1. Generate the token FIRST before using it
             var token = await _userManager.GeneratePasswordResetTokenAsync(user);
-            await _emailSender.SendEmailAsync(user.Email!, "Password Reset Token", $"Your password rest token is: <b>{token}</b>");
 
-            return Ok(new { Message = "If the email exists, a reset token has been sent." });
+            // 2. Use Uri.EscapeDataString (with the dot)
+            var resetLink = $"https://localhost:5114/api/Auth/reset-password?email={Uri.EscapeDataString(user.Email!)}&token={Uri.EscapeDataString(token)}";
+
+            var emailBody = $"<h3>Password Reset Request</h3><p>Click the link below to reset your password:</p><a href='{resetLink}'>Reset Password</a>";
+            await _emailSender.SendEmailAsync(user.Email!, "Reset Your Password", emailBody);
+
+            return Ok(new { message = "Password reset link sent successfully.", token });
         }
 
         [HttpPost("reset-password")]
-        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDto dto)
+        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDto model)
         {
-            var user = await _userManager.FindByEmailAsync(dto.Email);
-            if (user == null) return BadRequest("Inalid request");
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null) return BadRequest(new {message = "Invalid request"});
 
-            var result = await _userManager.ResetPasswordAsync(user, dto.Token, dto.NewPassword);
+            var result = await _userManager.ResetPasswordAsync(user, model.Token, model.NewPassword);
             if (!result.Succeeded)
                 return BadRequest(result.Errors);
 
-            return Ok(new { Message = "Password reset successful" });
+            return Ok(new { Message = "Password has been reset successfully" });
         }
     }
 }
